@@ -3,10 +3,11 @@ from tkinter import filedialog, ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import olefile, os, shutil, json, threading, subprocess, re, random, urllib.request, urllib.error
 from PIL import Image, ImageTk
+from serum_lookup import find_serum_colorization
 import io
 import difflib
 
-VERSION = "1.83-vpx1081.1"
+VERSION = "1.83-vpx1081.2"
 
 # ── Media fuzzy matching helpers ──────────────────────────────────────────────
 _MEDIA_NOISE = {
@@ -4831,47 +4832,10 @@ class VPXStandaloneMergingUtility:
                     if altcolor_has_vni:
                         break
 
-                serum_items = []  # list of (src_path, dst_name)
-                serum_seen = set()
-
-                # Candidate 1: altcolor/<name>.Crz where name matches rom/table/pGameName.
-                if altcolor_root and os.path.isdir(altcolor_root):
-                    try:
-                        for entry in sorted(os.listdir(altcolor_root)):
-                            entry_path = os.path.join(altcolor_root, entry)
-                            if not os.path.isfile(entry_path):
-                                continue
-                            stem, ext = os.path.splitext(entry)
-                            if ext.casefold() != ".crz":
-                                continue
-                            if stem.lower() not in {k.lower() for k in color_keys}:
-                                continue
-                            key = os.path.normcase(os.path.abspath(entry_path))
-                            if key in serum_seen:
-                                continue
-                            serum_seen.add(key)
-                            serum_items.append((entry_path, f"{stem}.Crz"))
-                    except Exception:
-                        pass
-
-                # Candidate 2: altcolor/<name>/**/<file>.Crz where name matches rom/table/pGameName.
-                for _key_name, candidate_dir in altcolor_candidates:
-                    try:
-                        for walk_root, _walk_dirs, walk_files in os.walk(candidate_dir):
-                            for entry in sorted(walk_files):
-                                entry_path = os.path.join(walk_root, entry)
-                                stem, ext = os.path.splitext(entry)
-                                if ext.casefold() != ".crz":
-                                    continue
-                                key = os.path.normcase(os.path.abspath(entry_path))
-                                if key in serum_seen:
-                                    continue
-                                serum_seen.add(key)
-                                serum_items.append((entry_path, f"{stem}.Crz"))
-                    except Exception:
-                        pass
-
-                serum_found = len(serum_items) > 0
+                # Serum v2 uses .cROMc (preferred) or legacy .cRZ.
+                # Search game-scoped directories only, not the entire altcolor tree.
+                serum_match = find_serum_colorization(v_dir, os.path.dirname(f), color_keys)
+                serum_found = serum_match is not None
 
                 # VNI and Serum are different plugins; preserve both when available.
                 altcolor_effective = altcolor_has_vni
@@ -4894,19 +4858,22 @@ class VPXStandaloneMergingUtility:
 
                 if serum_found:
                     if mode == "scan":
-                        if len(serum_items) == 1:
-                            self.log_audit(f"6-SERUM: Serum Colorization Detected ({serum_items[0][1]})", "found")
-                        else:
-                            self.log_audit(f"6-SERUM: Serum Colorization Detected ({len(serum_items)} files)", "found")
+                        self.log_audit(
+                            f"6-SERUM: {serum_match.destination_name} (DETECTED: {serum_match.source})",
+                            "found"
+                        )
                     elif mode == "full":
-                        for serum_src_path, serum_dst_name in serum_items:
-                            serum_key = rom or primary_color_key or os.path.splitext(serum_dst_name)[0]
-                            serum_dst_dir = os.path.join(table_dest, "serum", serum_key)
-                            os.makedirs(serum_dst_dir, exist_ok=True)
-                            shutil.copy2(serum_src_path, os.path.join(serum_dst_dir, serum_dst_name))
-                        self.file_stats['serum'] += len(serum_items)
+                        serum_dst_dir = os.path.join(table_dest, "serum", serum_match.game_id)
+                        os.makedirs(serum_dst_dir, exist_ok=True)
+                        serum_dest = os.path.join(serum_dst_dir, serum_match.destination_name)
+                        if not os.path.isfile(serum_dest):
+                            shutil.copy2(serum_match.source, serum_dest)
+                            self.file_stats['serum'] += 1
+                            self.log_audit(f"6-SERUM: {serum_match.destination_name} (COPIED)", "found")
+                        else:
+                            self.log_audit(f"6-SERUM: {serum_match.destination_name} (EXISTS; SKIPPED)", "yellow")
                 elif mode == "scan":
-                    self.log_audit("6-SERUM: NOT FOUND", "missing")
+                    self.log_audit("6-SERUM: NOT FOUND (.cROMc/.cRZ)", "missing")
                 
                 # PUP pack: physically scan PUP VIDEOS folder and match table/rom/pGameName
                 pup_found = False
