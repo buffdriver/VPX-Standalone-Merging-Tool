@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from serum_lookup import find_serum_colorization
+from serum_lookup import find_serum_colorization, serum_game_ids, serum_diagnostic_lines
 
 
 class SerumLookupTests(unittest.TestCase):
@@ -69,6 +69,34 @@ class SerumLookupTests(unittest.TestCase):
 
     def test_empty_config_paths(self):
         self.assertIsNone(find_serum_colorization("", "", ["afm_113"]))
+
+    def test_extracts_rom_from_external_override_before_embedded(self):
+        ids = serum_game_ids(
+            embedded_script='Const cGameName = "old_rom"',
+            override_script='Const cGameName = "afm_113"\\n pGameName = "afm_113"',
+            detected_rom="old_rom",
+            table_name="Addams Family VPX",
+        )
+        self.assertEqual(ids[0], "afm_113")
+        self.assertIn("old_rom", ids)
+        self.put("VPinMAME/altcolor/afm_113/pin2dmd.cROMc")
+        self.assertEqual(self.lookup(*ids).destination_name, "afm_113.cROMc")
+
+    def test_vpinmame_parent_misconfigured_as_root(self):
+        source = self.put("VPinMAME/altcolor/afm_113/pin2dmd.cROMc")
+        found = find_serum_colorization(str(self.root), str(self.table), ["afm_113"])
+        self.assertEqual(found.source, str(source))
+
+    def test_altcolor_selected_directly(self):
+        source = self.put("VPinMAME/altcolor/afm_113/pin2dmd.cROMc")
+        found = find_serum_colorization(str(self.vpm / "altcolor"), str(self.table), ["afm_113"])
+        self.assertEqual(found.source, str(source))
+
+    def test_diagnostics_show_expected_folder_and_identifiers(self):
+        self.put("VPinMAME/altcolor/another_rom/another_rom.cROMc")
+        lines = serum_diagnostic_lines(str(self.vpm), ["afm_113"])
+        self.assertTrue(any("afm_113" in x for x in lines))
+        self.assertTrue(any("No matching ROM subfolder" in x for x in lines))
 
 
 if __name__ == "__main__":
