@@ -138,7 +138,7 @@ def find_serum_colorization(
 # Keep this parser separate from VPX's embedded-script reader: external .vbs
 # overrides may supply a different game ID, and should be checked first.
 _GAME_ASSIGNMENT = re.compile(
-    r'^\\s*(?:Const\\s+)?(?:cGameName|GameName|RomName|OptRom|pGameName)\\s*=\\s*"([^"\\r\\n]+)"',
+    r'^\s*(?:Const\s+)?(?:cGameName|GameName|RomName|OptRom|pGameName)\s*=\s*"([^"\r\n]+)"',
     re.IGNORECASE | re.MULTILINE,
 )
 
