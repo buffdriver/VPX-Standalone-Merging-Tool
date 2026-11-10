@@ -3,11 +3,11 @@ from tkinter import filedialog, ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import olefile, os, shutil, json, threading, subprocess, re, random, urllib.request, urllib.error
 from PIL import Image, ImageTk
-from serum_lookup import find_serum_colorization
+from serum_lookup import find_serum_colorization, serum_game_ids, serum_diagnostic_lines
 import io
 import difflib
 
-VERSION = "1.83-vpx1081.2"
+VERSION = "1.83-vpx1081.3"
 
 # ── Media fuzzy matching helpers ──────────────────────────────────────────────
 _MEDIA_NOISE = {
@@ -4773,16 +4773,26 @@ class VPXStandaloneMergingUtility:
                             pass
 
                 # 4. AltSound / 5. AltColor / 6. Serum Colorization
-                pgame_names = re.findall(r'\bpGameName\s*=\s*"([^"]+)"', script, re.IGNORECASE)
-                color_keys = []
-                for n in [rom, v_base] + pgame_names:
-                    if not n:
-                        continue
-                    nn = n.strip()
-                    if not nn:
-                        continue
-                    if nn.lower() not in [x.lower() for x in color_keys]:
-                        color_keys.append(nn)
+                # External .vbs scripts override the embedded VPX script in
+                # VPX. Read these before choosing a Serum ROM folder.
+                override_script = ""
+                if f.lower().endswith(".vpx"):
+                    override_file = os.path.join(os.path.dirname(f), f"{v_base}.vbs")
+                    if os.path.isfile(override_file):
+                        override_raw = self.extract_script(override_file)
+                        if isinstance(override_raw, bytes):
+                            override_script = override_raw.decode("latin-1", errors="ignore")
+                        else:
+                            override_script = override_raw or ""
+                elif f.lower().endswith(".vbs"):
+                    override_script = script
+
+                color_keys = serum_game_ids(
+                    embedded_script=script,
+                    override_script=override_script,
+                    detected_rom=rom or "",
+                    table_name=v_base,
+                )
                 primary_color_key = rom or (color_keys[0] if color_keys else None)
 
                 # 4. AltSound (ROM folder based)
@@ -4874,6 +4884,8 @@ class VPXStandaloneMergingUtility:
                             self.log_audit(f"6-SERUM: {serum_match.destination_name} (EXISTS; SKIPPED)", "yellow")
                 elif mode == "scan":
                     self.log_audit("6-SERUM: NOT FOUND (.cROMc/.cRZ)", "missing")
+                    for diagnosis in serum_diagnostic_lines(v_dir, color_keys):
+                        self.log_audit("   " + diagnosis, "yellow")
                 
                 # PUP pack: physically scan PUP VIDEOS folder and match table/rom/pGameName
                 pup_found = False
