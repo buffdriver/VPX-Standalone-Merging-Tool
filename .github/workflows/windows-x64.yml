@@ -37,7 +37,11 @@ jobs:
 
       - name: Verify Python source compiles
         shell: pwsh
-        run: python -m py_compile VPXmerge.py
+        run: python -m py_compile VPXmerge.py serum_lookup.py
+
+      - name: Run Serum regression tests
+        shell: pwsh
+        run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: Build application
         shell: pwsh
