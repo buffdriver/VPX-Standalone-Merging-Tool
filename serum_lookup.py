@@ -4,6 +4,7 @@ VPX 10.8.1 expects a game-named file inside serum/<game>/
 (prefer <game>.cROMc, otherwise <game>.cRZ).
 """
 import os
+import re
 from pathlib import Path
 from typing import NamedTuple, Optional, Sequence
 
@@ -95,6 +96,14 @@ def find_serum_colorization(
             (vpm_root, ("altcolor",)),
             (vpm_root, ("pinmame", "altcolor")),
         ])
+        # Accept the VPinMAME root, its parent, or the altcolor directory
+        # itself. The GUI calls the field "VPINMAME", which is easy to
+        # mistake for a parent installation folder.
+        if vpm_root.name.casefold() == "altcolor":
+            bases.append((vpm_root, ()))
+        if vpm_root.name.casefold() == "roms":
+            bases.append((vpm_root.parent, ("altcolor",)))
+        bases.append((vpm_root, ("VPinMAME", "altcolor")))
 
     seen = set()
     for raw_id in game_ids:
@@ -125,3 +134,79 @@ def find_serum_colorization(
                 if file:
                     return SerumMatch(str(file), game_id, extension)
     return None
+
+# Keep this parser separate from VPX's embedded-script reader: external .vbs
+# overrides may supply a different game ID, and should be checked first.
+_GAME_ASSIGNMENT = re.compile(
+    r'^\\s*(?:Const\\s+)?(?:cGameName|GameName|RomName|OptRom|pGameName)\\s*=\\s*"([^"\\r\\n]+)"',
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def serum_game_ids(
+    embedded_script: str = "",
+    override_script: str = "",
+    detected_rom: str = "",
+    table_name: str = "",
+) -> list[str]:
+    """Return literal game identifiers, prioritizing an external VBS override.
+
+    Includes the existing embedded-script ROM as a fallback, and finally the
+    table file base name. Never guess by selecting an unrelated ROM folder.
+    """
+    game_ids = []
+    seen = set()
+
+    def add(name):
+        if name:
+            name = name.strip()
+            if name and name.casefold() not in seen:
+                seen.add(name.casefold())
+                game_ids.append(name)
+
+    for text in (override_script or "", embedded_script or ""):
+        for match in _GAME_ASSIGNMENT.finditer(text):
+            add(match.group(1))
+    add(detected_rom)
+    add(table_name)
+    return game_ids
+
+
+def serum_diagnostic_lines(vpinmame_directory: str, game_ids: Sequence[str]) -> list[str]:
+    """Short actionable scan diagnostics, for users with real-world VPinMAME trees."""
+    root = Path(vpinmame_directory) if vpinmame_directory else None
+    if root is None:
+        return ["VPINMAME source is not set in the SOURCE FOLDERS panel."]
+    if not root.is_dir():
+        return [f"VPINMAME source folder does not exist: {root}"]
+    if not game_ids:
+        return [f"VPINMAME source: {root}", "No ROM identifier was found in the table or its .vbs override."]
+
+    # The expected legacy location is the first place to inspect.
+    possible_roots = [(_resolve_dir(root, "altcolor"), root / "altcolor")]
+    if root.name.casefold() == "altcolor":
+        possible_roots.insert(0, (root, root))
+    possible_roots.append((_resolve_dir(root, "VPinMAME", "altcolor"), root / "VPinMAME" / "altcolor"))
+    messages = [f"VPINMAME source: {root}",
+                f"ROM identifiers tried: {', '.join(game_ids[:8])}"]
+    available = [(p, expected) for p, expected in possible_roots if p is not None]
+    if not available:
+        messages.append("No altcolor directory found under this VPINMAME source.")
+        messages.append(f"Expected path: {root / 'altcolor' / game_ids[0]}")
+        return messages
+
+    for base, expected in available[:2]:
+        found = [(_resolve_dir(base, key), key) for key in game_ids]
+        matches = [(folder, key) for folder, key in found if folder is not None]
+        if matches:
+            for folder, key in matches[:3]:
+                try:
+                    packs = [p.name for p in folder.rglob("*")
+                             if p.is_file() and p.suffix.casefold() in (".cromc", ".crz")]
+                    messages.append(f"Matching ROM folder: {folder} (Serum files: {', '.join(packs[:4]) or 'none'})")
+                except OSError as exc:
+                    messages.append(f"Cannot inspect {folder}: {exc}")
+        else:
+            messages.append(f"No matching ROM subfolder in: {base}")
+            messages.append(f"Expected: {base / game_ids[0]}")
+    return messages
