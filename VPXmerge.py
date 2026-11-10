@@ -3,10 +3,11 @@ from tkinter import filedialog, ttk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 import olefile, os, shutil, json, threading, subprocess, re, random, urllib.request, urllib.error
 from PIL import Image, ImageTk
+from serum_lookup import find_serum_colorization, serum_game_ids, serum_diagnostic_lines
 import io
 import difflib
 
-VERSION = "1.83"
+VERSION = "1.83-vpx1081.3"
 
 # ── Media fuzzy matching helpers ──────────────────────────────────────────────
 _MEDIA_NOISE = {
@@ -2733,7 +2734,7 @@ class VPXStandaloneMergingUtility:
         self.target = tk.StringVar()
         self.enable_patch_lookup = tk.BooleanVar(value=True)
         self.include_media = tk.BooleanVar(value=False)
-        self.media_format = tk.StringVar(value="VPinFE")  # VPinFE or Batocera
+        self.media_format = tk.StringVar(value="VPX 10.8.1")  # native, VPinFE, PuP Media
         
         # File tracking for summary
         self.file_stats = {
@@ -2883,8 +2884,8 @@ class VPXStandaloneMergingUtility:
         tk.Label(opt_row, text="Format:", bg=BG, fg=CYAN,
                  font=("Courier", 11, "bold")).pack(side="left", padx=(10, 5))
         media_dropdown = ttk.Combobox(opt_row, textvariable=self.media_format,
-                                      values=["VPinFE", "PuP Media"],
-                                      state="readonly", width=10,
+                                      values=["VPX 10.8.1", "VPinFE", "PuP Media"],
+                                      state="readonly", width=13,
                                       font=("Courier", 10))
         media_dropdown.pack(side="left")
 
@@ -4053,6 +4054,8 @@ class VPXStandaloneMergingUtility:
 
         media_format = self.media_format.get()
         
+        if media_format == "VPX 10.8.1":
+            return self._scan_vpx1081_media(source_pup_path, table_name, target_table_folder)
         if media_format == "Batocera":
             # Batocera: media goes next to VPX file (in table folder root)
             # Skip if any Batocera media already exists
@@ -4072,6 +4075,80 @@ class VPXStandaloneMergingUtility:
             if os.path.isdir(media_dest):
                 return []
             return self._scan_vpinfe_media(source_pup_path, table_name, media_dest)
+
+    def _scan_vpx1081_media(self, source_pup_path, table_name, table_dest):
+        """Export optional frontend preview media using the VPX 10.8.1 layout.
+
+        Naming is a zero-install frontend guideline, not a requirement of the
+        VPX player. Existing media is not overwritten.
+        """
+        parent = os.path.dirname(source_pup_path.rstrip('/\\'))
+        popmedia = os.path.join(parent, "POPMedia", "Visual Pinball X")
+        if not os.path.isdir(popmedia):
+            return []
+        media_dest = os.path.join(table_dest, "medias")
+        # Menu is an optional fallback if no DMD media was found.
+        mappings = [
+            ("Playfield", "Playfield", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("Backglass", "Backglass", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("DMD", "DMD", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("Menu", "DMD", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("FullDMD", "FullDMD", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("Topper", "Topper", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("RealDMD", "RealDMD", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("RealColorDMD", "RealColorDMD", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("Loading", "Loading", (".mp4", ".avi", ".f4v", ".png", ".jpg", ".jpeg")),
+            ("GameHelp", "GameHelp", (".png", ".jpg", ".jpeg")),
+            ("Gameinfo", "GameInfo", (".png", ".jpg", ".jpeg")),
+            ("Wheel", "Wheel", (".apng", ".png", ".jpg", ".jpeg")),
+            ("AudioLaunch", "AudioLaunch", (".mp3", ".wav", ".ogg")),
+            ("Audio", "Audio", (".mp3", ".wav", ".ogg")),
+        ]
+        copied = []
+        completed_types = set()
+        for folder_name, media_type, extensions in mappings:
+            if media_type in completed_types:
+                continue
+            prefix = f"({media_type}) {table_name}"
+            if os.path.isdir(media_dest) and any(
+                filename.casefold().startswith((prefix + ".").casefold())
+                for filename in os.listdir(media_dest)
+            ):
+                completed_types.add(media_type)
+                continue
+            src_folder = os.path.join(popmedia, folder_name)
+            if not os.path.isdir(src_folder):
+                continue
+            try:
+                candidates = sorted(
+                    n for n in os.listdir(src_folder)
+                    if os.path.isfile(os.path.join(src_folder, n))
+                    and os.path.splitext(n)[1].lower() in extensions
+                )
+            except OSError:
+                continue
+            best_name, best_score = None, 0.0
+            for filename in candidates:
+                stem = os.path.splitext(filename)[0]
+                score = 1.0 if stem.casefold() == table_name.casefold() else _mfuzzy(table_name, stem)
+                if score > best_score:
+                    best_name, best_score = filename, score
+            if not best_name or best_score < 0.5:
+                continue
+            extension = os.path.splitext(best_name)[1].lower()
+            destination_name = prefix + extension
+            os.makedirs(media_dest, exist_ok=True)
+            dest = os.path.join(media_dest, destination_name)
+            if os.path.exists(dest):
+                completed_types.add(media_type)
+                continue
+            shutil.copy2(os.path.join(src_folder, best_name), dest)
+            copied.append({"original": f"{folder_name}/{best_name}",
+                           "renamed": destination_name, "score": best_score})
+            completed_types.add(media_type)
+        if copied:
+            self._write_media_log(media_dest, table_name, copied)
+        return copied
 
     def _scan_batocera_media(self, source_pup_path, table_name, media_dest, folder_name):
         """
@@ -4500,11 +4577,21 @@ class VPXStandaloneMergingUtility:
             elif mode == "full": 
                 shutil.copy2(f, os.path.join(table_dest, fname))
                 self.file_stats['tables'] += 1
+
+                # Preserve a matching source script override or Nixie layout
+                # without replacing existing files in the destination.
+                for suffix in (".vbs", ".nix"):
+                    companion = os.path.join(os.path.dirname(f), f"{v_base}{suffix}")
+                    if os.path.isfile(companion):
+                        companion_dest = os.path.join(table_dest, os.path.basename(companion))
+                        if not os.path.exists(companion_dest):
+                            shutil.copy2(companion, companion_dest)
+                            self.log_audit(f"SIDECAR: {os.path.basename(companion)} (COPIED)", "found")
                 
                 # Copy media files if enabled
                 if self.include_media.get():
                     media_dest_check = os.path.join(table_dest, "medias")
-                    if os.path.isdir(media_dest_check):
+                    if os.path.isdir(media_dest_check) and self.media_format.get() != "VPX 10.8.1":
                         self.log_audit(f"10-MEDIA: SKIPPED (medias/ already exists)", "yellow")
                     else:
                         media_copied = self.scan_and_copy_media(p_dir, v_base, table_dest, os.path.basename(table_dest))
@@ -4575,13 +4662,16 @@ class VPXStandaloneMergingUtility:
                     except Exception:
                         pass
 
-                # Look in same folder as the file, then t_dir as fallback
+                # VPX accepts a backglass named after the table or its folder.
                 for search_dir in [file_dir, t_dir]:
                     if not search_dir:
                         continue
-                    candidate = os.path.join(search_dir, f"{b2s_base}.directb2s")
-                    if os.path.exists(candidate):
-                        b2s_src, b2s_fname = candidate, f"{b2s_base}.directb2s"
+                    for base in dict.fromkeys([b2s_base, os.path.basename(file_dir)]):
+                        candidate = os.path.join(search_dir, f"{base}.directb2s")
+                        if os.path.isfile(candidate):
+                            b2s_src, b2s_fname = candidate, os.path.basename(candidate)
+                            break
+                    if b2s_src:
                         break
                 if b2s_src:
                     if mode == "scan": self.log_audit(f"2-BACKGLASS: {b2s_fname} (DETECTED)", "found")
@@ -4683,16 +4773,26 @@ class VPXStandaloneMergingUtility:
                             pass
 
                 # 4. AltSound / 5. AltColor / 6. Serum Colorization
-                pgame_names = re.findall(r'\bpGameName\s*=\s*"([^"]+)"', script, re.IGNORECASE)
-                color_keys = []
-                for n in [rom, v_base] + pgame_names:
-                    if not n:
-                        continue
-                    nn = n.strip()
-                    if not nn:
-                        continue
-                    if nn.lower() not in [x.lower() for x in color_keys]:
-                        color_keys.append(nn)
+                # External .vbs scripts override the embedded VPX script in
+                # VPX. Read these before choosing a Serum ROM folder.
+                override_script = ""
+                if f.lower().endswith(".vpx"):
+                    override_file = os.path.join(os.path.dirname(f), f"{v_base}.vbs")
+                    if os.path.isfile(override_file):
+                        override_raw = self.extract_script(override_file)
+                        if isinstance(override_raw, bytes):
+                            override_script = override_raw.decode("latin-1", errors="ignore")
+                        else:
+                            override_script = override_raw or ""
+                elif f.lower().endswith(".vbs"):
+                    override_script = script
+
+                color_keys = serum_game_ids(
+                    embedded_script=script,
+                    override_script=override_script,
+                    detected_rom=rom or "",
+                    table_name=v_base,
+                )
                 primary_color_key = rom or (color_keys[0] if color_keys else None)
 
                 # 4. AltSound (ROM folder based)
@@ -4702,7 +4802,7 @@ class VPXStandaloneMergingUtility:
                         if mode == "scan":
                             self.log_audit(f"4-ALTSOUND: {rom} (DETECTED)", "found")
                         elif mode == "full":
-                            shutil.copytree(altsound_src, os.path.join(table_dest, "pinmame", "altsound", rom), dirs_exist_ok=True)
+                            shutil.copytree(altsound_src, os.path.join(table_dest, "altsound", rom), dirs_exist_ok=True)
                             self.file_stats['altsound'] += 1
                     else:
                         if mode == "scan":
@@ -4742,50 +4842,13 @@ class VPXStandaloneMergingUtility:
                     if altcolor_has_vni:
                         break
 
-                serum_items = []  # list of (src_path, dst_name)
-                serum_seen = set()
+                # Serum v2 uses .cROMc (preferred) or legacy .cRZ.
+                # Search game-scoped directories only, not the entire altcolor tree.
+                serum_match = find_serum_colorization(v_dir, os.path.dirname(f), color_keys)
+                serum_found = serum_match is not None
 
-                # Candidate 1: altcolor/<name>.Crz where name matches rom/table/pGameName.
-                if altcolor_root and os.path.isdir(altcolor_root):
-                    try:
-                        for entry in sorted(os.listdir(altcolor_root)):
-                            entry_path = os.path.join(altcolor_root, entry)
-                            if not os.path.isfile(entry_path):
-                                continue
-                            stem, ext = os.path.splitext(entry)
-                            if ext.casefold() != ".crz":
-                                continue
-                            if stem.lower() not in {k.lower() for k in color_keys}:
-                                continue
-                            key = os.path.normcase(os.path.abspath(entry_path))
-                            if key in serum_seen:
-                                continue
-                            serum_seen.add(key)
-                            serum_items.append((entry_path, f"{stem}.Crz"))
-                    except Exception:
-                        pass
-
-                # Candidate 2: altcolor/<name>/**/<file>.Crz where name matches rom/table/pGameName.
-                for _key_name, candidate_dir in altcolor_candidates:
-                    try:
-                        for walk_root, _walk_dirs, walk_files in os.walk(candidate_dir):
-                            for entry in sorted(walk_files):
-                                entry_path = os.path.join(walk_root, entry)
-                                stem, ext = os.path.splitext(entry)
-                                if ext.casefold() != ".crz":
-                                    continue
-                                key = os.path.normcase(os.path.abspath(entry_path))
-                                if key in serum_seen:
-                                    continue
-                                serum_seen.add(key)
-                                serum_items.append((entry_path, f"{stem}.Crz"))
-                    except Exception:
-                        pass
-
-                serum_found = len(serum_items) > 0
-
-                # If a .Crz is present, report/copy as Serum and do not mark AltColor as detected.
-                altcolor_effective = altcolor_has_vni and not serum_found
+                # VNI and Serum are different plugins; preserve both when available.
+                altcolor_effective = altcolor_has_vni
 
                 if altcolor_effective:
                     if mode == "scan":
@@ -4801,25 +4864,28 @@ class VPXStandaloneMergingUtility:
                         shutil.copytree(altcolor_src_dir, os.path.join(vni_dst_root, primary_color_key), dirs_exist_ok=True)
                         self.file_stats['altcolor'] += 1
                 elif mode == "scan":
-                    if serum_found:
-                        self.log_audit("5-ALTCOLOR: NOT FOUND (SERUM PACK)", "missing")
-                    else:
-                        self.log_audit("5-ALTCOLOR: NOT FOUND", "missing")
+                    self.log_audit("5-ALTCOLOR: NOT FOUND", "missing")
 
                 if serum_found:
                     if mode == "scan":
-                        if len(serum_items) == 1:
-                            self.log_audit(f"6-SERUM: Serum Colorization Detected ({serum_items[0][1]})", "found")
-                        else:
-                            self.log_audit(f"6-SERUM: Serum Colorization Detected ({len(serum_items)} files)", "found")
+                        self.log_audit(
+                            f"6-SERUM: {serum_match.destination_name} (DETECTED: {serum_match.source})",
+                            "found"
+                        )
                     elif mode == "full":
-                        serum_dst_dir = os.path.join(table_dest, "serum")
+                        serum_dst_dir = os.path.join(table_dest, "serum", serum_match.game_id)
                         os.makedirs(serum_dst_dir, exist_ok=True)
-                        for serum_src_path, serum_dst_name in serum_items:
-                            shutil.copy2(serum_src_path, os.path.join(serum_dst_dir, serum_dst_name))
-                        self.file_stats['serum'] += len(serum_items)
+                        serum_dest = os.path.join(serum_dst_dir, serum_match.destination_name)
+                        if not os.path.isfile(serum_dest):
+                            shutil.copy2(serum_match.source, serum_dest)
+                            self.file_stats['serum'] += 1
+                            self.log_audit(f"6-SERUM: {serum_match.destination_name} (COPIED)", "found")
+                        else:
+                            self.log_audit(f"6-SERUM: {serum_match.destination_name} (EXISTS; SKIPPED)", "yellow")
                 elif mode == "scan":
-                    self.log_audit("6-SERUM: NOT FOUND", "missing")
+                    self.log_audit("6-SERUM: NOT FOUND (.cROMc/.cRZ)", "missing")
+                    for diagnosis in serum_diagnostic_lines(v_dir, color_keys):
+                        self.log_audit("   " + diagnosis, "yellow")
                 
                 # PUP pack: physically scan PUP VIDEOS folder and match table/rom/pGameName
                 pup_found = False
@@ -5142,7 +5208,9 @@ class VPXStandaloneMergingUtility:
                                 save_dir = table_dest
                                 os.makedirs(save_dir, exist_ok=True)
                             patch_save_path = os.path.join(save_dir, f"{v_base}.vbs")
-                            if self.download_patch(patch_result['download_url'], patch_save_path):
+                            if mode == "full" and os.path.isfile(patch_save_path):
+                                self.log_audit(f"10-PATCH: existing {v_base}.vbs preserved", "yellow")
+                            elif self.download_patch(patch_result['download_url'], patch_save_path):
                                 self.log_audit(f"10-PATCH: {patch_name} (DOWNLOADED)", "found")
                                 self.log_audit(f"   → Saved: {patch_save_path}", "found")
                                 self.file_stats['patches'] += 1
